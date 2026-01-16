@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: password-manager-db
+    environment:
+      POSTGRES_DB: password_app
+      POSTGRES_USER: database-user (add)
+      POSTGRES_PASSWORD: (add)
+    volumes:
+      - pm_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U database-user -d password_app"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  password-manager:
+    image: kosztyk/password-manager:first
+    build:
+      context: .
+      args:
+        VITE_BUILD_ID: ${VITE_BUILD_ID:-monolith-0.1.0}
+    env_file: .env
+    environment:
+      # Override DATABASE_URL to point at the postgres service
+      DATABASE_URL: postgresql://database-user:password@postgres:5432/password_app
+      APP_VERSION: "0.1.0"
+      NODE_ENV: production
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${APP_HTTP_PORT:-8085}:80"
+    restart: unless-stopped
+
+volumes:
+  pm_postgres_data:
