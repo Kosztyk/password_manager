@@ -8,9 +8,9 @@ A self-hosted password management web application packaged as a **single monolit
 * **Frontend**: static build served by **Nginx**
 * **Backend**: **Node.js API** (TypeScript build)
 * **Database**: **PostgreSQL** (external or existing instance)
-* **Icons**: stored in **PostgreSQL** (not on container storage)
 
 ---
+<img width="1632" height="804" alt="Screenshot 2026-01-16 at 19 55 27" src="https://github.com/user-attachments/assets/7da3912f-d93b-497c-a723-ad4890fd9ed7" />
 
 ## Features
 
@@ -52,7 +52,7 @@ docker compose up -d --build
 
 ```dotenv
 # PostgreSQL connection string
-DATABASE_URL=postgresql://database:CHANGE_ME@192.168.3.1:5432/password_manager
+DATABASE_URL=postgresql://database:CHANGE_ME@192.168.3.1:5432/password_app
 
 # JWT secret (32+ bytes recommended)
 JWT_SECRET=REPLACE_WITH_RANDOM_64_HEX
