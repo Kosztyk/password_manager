@@ -24,7 +24,7 @@ A self-hosted password management web application packaged as a **single monolit
 ## Requirements
 
 * Docker Engine + Docker Compose plugin
-* A reachable PostgreSQL instance (example: `192.168.68.152:5432`)
+* A reachable PostgreSQL instance (example: `192.168.1.3:5432`)
 * DNS/host reachability to the machine running the container
 
 ---
@@ -42,7 +42,7 @@ docker compose up -d --build
 3. Open the UI:
 
 * `http://<HOST_IP>:${APP_HTTP_PORT}`
-  Example: `http://192.168.68.112:8085`
+  Example: `http://192.168.1.3:8085`
 
 ---
 
@@ -52,7 +52,7 @@ docker compose up -d --build
 
 ```dotenv
 # PostgreSQL connection string
-DATABASE_URL=postgresql://jailmaker:CHANGE_ME@192.168.68.152:5432/password_app
+DATABASE_URL=postgresql://database:CHANGE_ME@192.168.3.1:5432/password_manager
 
 # JWT secret (32+ bytes recommended)
 JWT_SECRET=REPLACE_WITH_RANDOM_64_HEX
