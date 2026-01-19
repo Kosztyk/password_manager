@@ -111,7 +111,7 @@ services:
     restart: unless-stopped
 
   password-manager:
-    image: kosztyk/password-manager:first
+    image: kosztyk/password-manager:4th
     build:
       context: .
       args:
