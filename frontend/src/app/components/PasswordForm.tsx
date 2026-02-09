@@ -1,573 +1,393 @@
-import { X, Save, Plus, Trash2 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Menu, Search, ExternalLink, Edit2, Trash2, Copy, Eye, EyeOff, Key, Server, Settings, Terminal } from 'lucide-react';
+import { useState } from 'react';
 import * as api from '@/app/api';
-import type { PasswordEntry, Credential, EntryType, ServerType } from '@/app/App';
+import type { PasswordEntry } from '@/app/App';
 
-interface PasswordFormProps {
-  entry: PasswordEntry | null;
-  onSave: (entry: Omit<PasswordEntry, 'id' | 'createdAt' | 'updatedAt'>, opts?: { iconFile?: File | null }) => void;
-  onClose: () => void;
+interface PasswordListProps {
+  passwords: PasswordEntry[];
+  searchQuery: string;
+  onSearchChange: (query: string) => void;
+  onEdit: (entry: PasswordEntry) => void;
+  onDelete: (id: string) => void;
   isDarkMode: boolean;
+  onOpenSidebar?: () => void;
+  onOpenSettings?: () => void;
 }
 
-export function PasswordForm({ entry, onSave, onClose, isDarkMode }: PasswordFormProps) {
-  const [title, setTitle] = useState('');
-  const [type, setType] = useState<EntryType>('Application');
-  const [category, setCategory] = useState('General');
-  const [notes, setNotes] = useState('');
-  const [urls, setUrls] = useState<string[]>(['']);
-  const [ips, setIps] = useState<string[]>(['']);
-  const [serverType, setServerType] = useState<ServerType>('VM');
-  const [credentials, setCredentials] = useState<Credential[]>([
-    { id: Date.now().toString(), username: '', password: '' }
-  ])
-  const [iconKind, setIconKind] = useState<'url' | 'upload' | null>(null);
-  const [iconUrl, setIconUrl] = useState('');
-  const [iconCandidates, setIconCandidates] = useState<api.ApiIconCandidate[]>([]);
-  const [iconPickOpen, setIconPickOpen] = useState(false);
-  const [iconLoading, setIconLoading] = useState(false);
-  const [iconError, setIconError] = useState<string | null>(null);
-  const [iconFile, setIconFile] = useState<File | null>(null);
+export function PasswordList({
+  passwords,
+  searchQuery,
+  onSearchChange,
+  onEdit,
+  onDelete,
+  isDarkMode,
+  onOpenSidebar,
+  onOpenSettings,
+}: PasswordListProps) {
+  const [visiblePasswords, setVisiblePasswords] = useState<Set<string>>(new Set());
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [failedIcons, setFailedIcons] = useState<Set<string>>(new Set());
+  const [connectingId, setConnectingId] = useState<string | null>(null);
 
-;
-
-  useEffect(() => {
-    setIconFile(null);
-    setIconCandidates([]);
-    setIconPickOpen(false);
-    setIconError(null);
-    setIconLoading(false);
-    setIconKind(entry?.iconKind ?? null);
-    setIconUrl(entry?.iconUrl ?? '');
-
-    if (entry) {
-      setTitle(entry.title);
-      setType(entry.type);
-      setCategory(entry.category);
-      setNotes(entry.notes);
-      setUrls(entry.urls.length > 0 ? entry.urls : ['']);
-      setIps(entry.ips.length > 0 ? entry.ips : ['']);
-      setServerType(entry.serverType || 'VM');
-      setCredentials(entry.credentials.length > 0 ? entry.credentials : [
-        { id: Date.now().toString(), username: '', password: '' }
-      ]);
-    } else {
-      setTitle('');
-      setType('Application');
-      setCategory('General');
-      setNotes('');
-      setUrls(['']);
-      setIps(['']);
-      setServerType('VM');
-      setCredentials([{ id: Date.now().toString(), username: '', password: '' }]);
-      setIconKind(null);
-      setIconUrl('');
-    }
-  }, [entry]);
-
-  const handleSubmit = (e?: any) => {
-    if (e?.preventDefault) e.preventDefault();
-    
-    if (!title.trim()) {
-      alert('Please enter a title');
-      return;
-    }
-
-    const hasValidCredentials = credentials.some(c => c.username.trim() && c.password.trim());
-    if (!hasValidCredentials) {
-      alert('Please add at least one username and password');
-      return;
-    }
-
-    // Filter out empty URLs, IPs, and credentials
-    const validUrls = urls.filter(url => url.trim());
-    const validIps = ips.filter(ip => ip.trim());
-    const validCredentials = credentials.filter(c => c.username.trim() && c.password.trim());
-
-        onSave(
-      {
-        title: title.trim(),
-        type,
-        category,
-        iconKind: iconKind,
-        iconUrl: iconUrl || null,
-        iconRef: null,
-        iconMime: null,
-        notes: notes.trim(),
-        urls: type === 'Application' ? validUrls : [],
-        ips: type === 'Server' ? validIps : [],
-        serverType: type === 'Server' ? serverType : undefined,
-        credentials: validCredentials,
-      },
-      { iconFile, iconImportUrl: iconFile ? null : (iconKind === 'url' && iconUrl ? iconUrl : null) }
-    );
+  const togglePasswordVisibility = (credentialId: string) => {
+    setVisiblePasswords((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(credentialId)) {
+        newSet.delete(credentialId);
+      } else {
+        newSet.add(credentialId);
+      }
+      return newSet;
+    });
   };
 
-  // URL handlers
-  const addUrl = () => {
-    setUrls([...urls, '']);
+  const copyToClipboard = async (text: string, field: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
   };
 
-  const updateUrl = (index: number, value: string) => {
-    const newUrls = [...urls];
-    newUrls[index] = value;
-    setUrls(newUrls);
+  /**
+   * Accepts user-typed values like:
+   * - "google.com"
+   * - "192.168.1.10:8080"
+   * - "http://x"
+   * - "https://x"
+   * Returns a safe absolute URL (or empty string).
+   */
+  const normalizeUrl = (raw: string) => {
+    const trimmed = String(raw ?? '').trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+    // Allow bare hosts / IPs by prefixing http:// so URL() parsing + clicking works
+    return `http://${trimmed}`;
   };
 
-  const removeUrl = (index: number) => {
-    if (urls.length > 1) {
-      setUrls(urls.filter((_, i) => i !== index));
+  const safeHostname = (raw: string) => {
+    try {
+      const normalized = normalizeUrl(raw);
+      if (!normalized) return '';
+      return new URL(normalized).hostname;
+    } catch {
+      // Never throw during render; show raw input as fallback
+      return String(raw ?? '');
     }
   };
 
-  // IP handlers
-  const addIp = () => {
-    setIps([...ips, '']);
-  };
-
-  const updateIp = (index: number, value: string) => {
-    const newIps = [...ips];
-    newIps[index] = value;
-    setIps(newIps);
-  };
-
-  const removeIp = (index: number) => {
-    if (ips.length > 1) {
-      setIps(ips.filter((_, i) => i !== index));
+  const getFaviconUrl = (url: string) => {
+    try {
+      const normalized = normalizeUrl(url);
+      if (!normalized) return '';
+      const domain = new URL(normalized).hostname;
+      return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
+    } catch {
+      return '';
     }
   };
 
-  // Credential handlers
-  const addCredential = () => {
-    setCredentials([
-      ...credentials,
-      { id: Date.now().toString(), username: '', password: '' }
-    ]);
+  const resolveIconUrl = (entry: PasswordEntry): string => {
+    if (entry.iconKind === 'upload' && entry.iconRef) return api.iconFileUrl(entry.iconRef);
+    if (entry.iconKind === 'url' && entry.iconUrl) return entry.iconUrl;
+    const u = (entry.urls && entry.urls.length ? entry.urls[0] : entry.url) || '';
+    return u ? getFaviconUrl(u) : '';
   };
 
-  const updateCredential = (index: number, field: 'username' | 'password', value: string) => {
-    const newCredentials = [...credentials];
-    newCredentials[index][field] = value;
-    setCredentials(newCredentials);
+  const handleIconError = (id: string) => {
+    setFailedIcons((prev) => new Set(prev).add(id));
   };
 
-  const removeCredential = (index: number) => {
-    if (credentials.length > 1) {
-      setCredentials(credentials.filter((_, i) => i !== index));
+  const connectSsh = async (entry: PasswordEntry) => {
+    if (entry.type !== 'Server') return;
+    setConnectingId(entry.id);
+    try {
+      const { url } = await api.getIntelliSshTerminalUrl(entry.id);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e: any) {
+      const msg = String(e?.message || 'Failed to open IntelliSSH terminal');
+      alert(msg);
+    } finally {
+      setConnectingId((cur) => (cur === entry.id ? null : cur));
     }
   };
-
-  const labelClass = `block text-sm mb-2 ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`;
-  const labelClassNoMb = `block text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`;
-  const subLabelClass = `block text-xs mb-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`;
-  const inputClass = `w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-    isDarkMode ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'
-  }`;
-  const inputClassSm = `w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-    isDarkMode ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'
-  }`;
-  const rowRemoveBtnClass = `p-2 rounded transition-colors ${
-    isDarkMode ? 'text-gray-300 hover:text-red-400 hover:bg-red-950/40' : 'text-gray-600 hover:text-red-600 hover:bg-red-50'
-  }`;
-  const credentialCardClass = `p-4 border rounded-lg ${isDarkMode ? 'border-gray-700 bg-gray-800/50' : 'border-gray-200 bg-gray-50'}`;
-  const subtleTextClass = `text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`;
-  const modalClass = `rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col ${
-    isDarkMode ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'
-  }`;
-  const headerClass = `flex items-center justify-between p-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`;
-  const footerClass = `flex items-center justify-end gap-3 p-6 border-t ${
-    isDarkMode ? 'border-gray-800 bg-gray-900' : 'border-gray-200 bg-gray-50'
-  }`;
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className={modalClass}>
-        {/* Header */}
-        <div className={headerClass}>
-          <h2 className="text-xl">{entry ? 'Edit Password' : 'Add New Password'}</h2>
-          <button
-            onClick={onClose}
-            className={`p-2 rounded transition-colors ${isDarkMode ? 'text-gray-300 hover:text-white hover:bg-gray-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'}`}
-          >
-            <X className="size-5" />
-          </button>
-        </div>
-
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6">
-          <div className="space-y-6">
-            {/* Title */}
-            <div>
-              <label htmlFor="title" className={labelClass}>
-                Title <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                id="title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className={inputClass}
-                placeholder="e.g., GitHub, Production Server"
-                required
-              />
-            </div>
-
-            {/* Type Selection */}
-            <div>
-              <label htmlFor="type" className={labelClass}>
-                Type <span className="text-red-500">*</span>
-              </label>
-              <select
-                id="type"
-                value={type}
-                onChange={(e) => setType(e.target.value as EntryType)}
-                className={inputClass}
-              >
-                <option value="Application">Application</option>
-                <option value="Server">Server</option>
-              </select>
-            </div>
-
-            {/* Category */}
-            <div>
-              <label htmlFor="category" className={labelClass}>
-                Category <span className="text-red-500">*</span>
-              </label>
-              <select
-                id="category"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className={inputClass}
-              >
-                <option value="General">General</option>
-                <option value="Email">Email</option>
-                <option value="Development">Development</option>
-                <option value="Social Media">Social Media</option>
-                <option value="Banking">Banking</option>
-                <option value="Shopping">Shopping</option>
-                <option value="Work">Work</option>
-                <option value="Personal">Personal</option>
-                <option value="VM">VM</option>
-                <option value="Container">Container</option>
-                <option value="HomeLab">HomeLab</option>
-              </select>
-            </div>
-
-            {/* Conditional: URLs for Application */}
-            {type === 'Application' && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className={labelClassNoMb}>URLs</label>
-                  <button
-                    type="button"
-                    onClick={addUrl}
-                    className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
-                  >
-                    <Plus className="size-4" />
-                    Add URL
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {urls.map((url, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <input
-                        type="url"
-                        value={url}
-                        onChange={(e) => updateUrl(index, e.target.value)}
-                        className={`flex-1 ${inputClass}`}
-                        placeholder="https://example.com"
-                      />
-                      {urls.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeUrl(index)}
-                          className={rowRemoveBtnClass}
-                          title="Remove URL"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Conditional: IPs and Server Type for Server */}
-            {type === 'Server' && (
-              <>
-                <div>
-                  <label htmlFor="serverType" className={labelClass}>
-                    Server Type <span className="text-red-500">*</span>
-                  </label>
-                  <select
-                    id="serverType"
-                    value={serverType}
-                    onChange={(e) => setServerType(e.target.value as ServerType)}
-                    className={inputClass}
-                  >
-                    <option value="VM">VM</option>
-                    <option value="Bare Metal">Bare Metal</option>
-                    <option value="Docker Container">Docker Container</option>
-                    <option value="CT">CT</option>
-                    <option value="Systemd-Nspawn">Systemd-Nspawn</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className={labelClassNoMb}>IP Addresses</label>
-                    <button
-                      type="button"
-                      onClick={addIp}
-                      className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
-                    >
-                      <Plus className="size-4" />
-                      Add IP
-                    </button>
-                  </div>
-                  <div className="space-y-2">
-                    {ips.map((ip, index) => (
-                      <div key={index} className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={ip}
-                          onChange={(e) => updateIp(index, e.target.value)}
-                          className={`flex-1 ${inputClass} font-mono`}
-                          placeholder="e.g., 192.168.1.100"
-                        />
-                        {ips.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => removeIp(index)}
-                            className={rowRemoveBtnClass}
-                            title="Remove IP"
-                          >
-                            <Trash2 className="size-4" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* Credentials Section */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className={labelClassNoMb}>
-                  Credentials <span className="text-red-500">*</span>
-                </label>
+    <div className="flex-1 flex flex-col h-[100dvh]">
+      {/* Header with Search */}
+      <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b p-4 md:p-6`}>
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-center justify-between gap-3 mb-3 md:mb-4">
+            <div className="flex items-center gap-3 min-w-0">
+              {onOpenSidebar ? (
                 <button
-                  type="button"
-                  onClick={addCredential}
-                  className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
+                  onClick={onOpenSidebar}
+                  className={`p-2 rounded-lg border transition-colors md:hidden ${
+                    isDarkMode ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                  }`}
+                  title="Menu"
                 >
-                  <Plus className="size-4" />
-                  Add Credential
+                  <Menu className="size-5" />
                 </button>
-              </div>
-              <div className="space-y-4">
-                {credentials.map((credential, index) => (
-                  <div key={credential.id} className={credentialCardClass}>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className={subtleTextClass}>Credential {index + 1}</span>
-                      {credentials.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeCredential(index)}
-                          className={`p-1 rounded transition-colors ${isDarkMode ? 'text-gray-300 hover:text-red-400 hover:bg-red-950/40' : 'text-gray-600 hover:text-red-600 hover:bg-red-100'}`}
-                          title="Remove credential"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
-                      )}
-                    </div>
-                    <div className="space-y-3">
-                      <div>
-                        <label className={subLabelClass}>
-                          Username
-                        </label>
-                        <input
-                          type="text"
-                          value={credential.username}
-                          onChange={(e) => updateCredential(index, 'username', e.target.value)}
-                          className={inputClassSm}
-                          placeholder="username or email"
-                        />
-                      </div>
-                      <div>
-                        <label className={subLabelClass}>
-                          Password
-                        </label>
-                        <input
-                          type="text"
-                          value={credential.password}
-                          onChange={(e) => updateCredential(index, 'password', e.target.value)}
-                          className={`${inputClassSm} font-mono`}
-                          placeholder="Enter password"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              ) : null}
+              <h2 className={`text-xl md:text-2xl ${isDarkMode ? 'text-white' : 'text-gray-900'} truncate`}>Password Vault</h2>
             </div>
-
-      
-      {/* Icon */}
-      <div className="space-y-2">
-        <label className={`text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>Icon</label>
-
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={iconUrl}
-            onChange={(e) => {
-              setIconUrl(e.target.value);
-              setIconKind(e.target.value ? 'url' : null);
-            }}
-            placeholder="Icon URL (optional)"
-            className={`flex-1 px-3 py-2 rounded-lg border ${
-              isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-300 text-gray-900'
-            } focus:outline-none focus:ring-2 focus:ring-blue-500`}
-          />
-          <button
-            type="button"
-            onClick={async () => {
-              setIconLoading(true);
-              setIconError(null);
-              try {
-                const firstUrl = (urls && urls.length ? urls[0] : undefined) || undefined;
-                const candidates = await api.suggestIcons(title, firstUrl);
-                setIconCandidates(candidates);
-                setIconPickOpen(true);
-              } catch (e: any) {
-                setIconError(e?.message ?? 'Failed to fetch icons');
-              } finally {
-                setIconLoading(false);
-              }
-            }}
-            className={`px-3 py-2 rounded-lg border text-sm ${
-              isDarkMode ? 'border-gray-700 text-gray-200 hover:bg-gray-800' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-            }`}
-            disabled={iconLoading || !title.trim()}
-            title={title.trim() ? 'Search icons' : 'Enter a title first'}
-          >
-            {iconLoading ? 'Searching…' : 'Auto'}
-          </button>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => setIconFile(e.target.files?.[0] ?? null)}
-            className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}
-          />
-          {iconFile ? (
-            <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Will upload: {iconFile.name}</span>
-          ) : null}
-        </div>
-
-        {iconError ? <div className="text-sm text-red-400">{iconError}</div> : null}
-      </div>
-
-      {iconPickOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-          <div
-            className={`w-full max-w-3xl rounded-xl border shadow-xl ${
-              isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'
-            }`}
-          >
-            <div
-              className={`flex items-center justify-between p-4 border-b ${
-                isDarkMode ? 'border-gray-800' : 'border-gray-200'
-              }`}
-            >
-              <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Pick an icon</h3>
+            {onOpenSettings ? (
               <button
-                type="button"
-                onClick={() => setIconPickOpen(false)}
-                className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
-                aria-label="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4">
-              {iconCandidates.length === 0 ? (
-                <div className={`${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>No icons found.</div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 max-h-[55vh] overflow-auto">
-                  {iconCandidates.map((c) => (
-                    <button
-                      key={c.url}
-                      type="button"
-                      onClick={() => {
-                        setIconKind('url');
-                        setIconUrl(c.url);
-                        setIconPickOpen(false);
-                      }}
-                      className={`p-3 rounded-xl border flex flex-col items-center gap-2 ${
-                        isDarkMode ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-200 hover:bg-gray-50'
-                      }`}
-                      title={`${c.source}${c.slug ? ` (${c.slug})` : ''}`}
-                    >
-                      <img src={c.url} alt="" className="w-10 h-10 object-contain" />
-                      <span className={`text-[10px] truncate w-full ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>{c.source}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className={`flex justify-end gap-2 p-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>
-              <button
-                type="button"
-                onClick={() => {
-                  setIconKind(null);
-                  setIconUrl('');
-                  setIconPickOpen(false);
-                }}
-                className={`px-4 py-2 rounded-lg border text-sm ${
-                  isDarkMode ? 'border-gray-700 text-gray-200 hover:bg-gray-800' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                onClick={onOpenSettings}
+                className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border transition-colors ${
+                  isDarkMode ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
                 }`}
+                title="Settings"
               >
-                Clear
+                <Settings className="size-4" />
+                Settings
               </button>
-              <button
-                type="button"
-                onClick={() => setIconPickOpen(false)}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm"
-              >
-                Done
-              </button>
-            </div>
+            ) : null}
+          </div>
+          <div className="relative">
+            <Search className={`absolute left-3 top-1/2 -translate-y-1/2 size-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-400'}`} />
+            <input
+              type="text"
+              placeholder="Search passwords..."
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              className={`w-full pl-11 pr-4 py-2.5 md:py-3 text-base border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'
+              }`}
+            />
           </div>
         </div>
-      )}
-        </div>
-        </form>
-        {/* Footer */}
-        <div className={footerClass}>
-          <button
-            type="button"
-            onClick={onClose}
-            className={`px-5 py-2.5 rounded-lg transition-colors ${isDarkMode ? 'text-gray-200 hover:bg-gray-800' : 'text-gray-700 hover:bg-gray-200'}`}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
-          >
-            <Save className="size-4" />
-            {entry ? 'Update' : 'Save'} Password
-          </button>
+      </div>
+
+      {/* Password List */}
+      <div className="flex-1 overflow-y-auto p-4 md:p-6">
+        <div className="max-w-5xl mx-auto space-y-3">
+          {passwords.length === 0 ? (
+            <div className={`text-center py-12 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <p>No passwords found</p>
+              <p className="text-sm mt-2">Try adjusting your search or add a new password</p>
+            </div>
+          ) : (
+            passwords.map((entry) => (
+              <div
+                key={entry.id}
+                className={`border rounded-lg p-4 md:p-5 transition-shadow ${
+                  isDarkMode ? 'bg-gray-800 border-gray-700 hover:shadow-lg hover:shadow-gray-900/50' : 'bg-white border-gray-200 hover:shadow-md'
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
+                  <div className="flex-1 flex items-center gap-3">
+                    {/* App Icon */}
+                    <div
+                      className={`size-10 rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
+                    >
+                      {(() => {
+                        const iconUrl = resolveIconUrl(entry);
+                        const canShowIcon = Boolean(iconUrl) && !failedIcons.has(entry.id);
+
+                        if (canShowIcon) {
+                          return (
+                            <img
+                              src={iconUrl}
+                              alt={`${entry.title} icon`}
+                              className="size-8"
+                              onError={() => handleIconError(entry.id)}
+                            />
+                          );
+                        }
+
+                        return entry.type === 'Server' ? (
+                          <Server className={`size-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`} />
+                        ) : (
+                          <Key className={`size-5 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`} />
+                        );
+                      })()}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <h3 className={`text-lg mb-1 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{entry.title}</h3>
+                      <div className={`flex items-center gap-2 text-sm flex-wrap ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        <span>{entry.category}</span>
+                        <span>•</span>
+                        <span className="text-blue-600">{entry.type}</span>
+                        {entry.type === 'Server' && entry.serverType && (
+                          <>
+                            <span>•</span>
+                            <span
+                              className={`px-2 py-0.5 rounded text-xs ${isDarkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-100 text-blue-700'}`}
+                            >
+                              {entry.serverType}
+                            </span>
+                          </>
+                        )}
+                        {entry.type === 'Application' && entry.urls.length > 0 && (
+                          <>
+                            <span>•</span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {entry.urls
+                                .map((u) => String(u ?? '').trim())
+                                .filter(Boolean)
+                                .map((url, index) => {
+                                  const href = normalizeUrl(url) || url;
+                                  const label = safeHostname(url) || url;
+
+                                  return (
+                                    <a
+                                      key={index}
+                                      href={href}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-1 text-blue-600 hover:text-blue-700"
+                                      title={url}
+                                    >
+                                      {label}
+                                      <ExternalLink className="size-3" />
+                                    </a>
+                                  );
+                                })}
+                            </div>
+                          </>
+                        )}
+                        {entry.type === 'Server' && entry.ips.length > 0 && (
+                          <>
+                            <span>•</span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {entry.ips.map((ip, index) => (
+                                <span
+                                  key={index}
+                                  className={`font-mono text-xs px-2 py-0.5 rounded ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-700'}`}
+                                >
+                                  {ip}
+                                </span>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      onClick={() => onEdit(entry)}
+                      className={`p-2 rounded transition-colors ${
+                        isDarkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-gray-700' : 'text-gray-600 hover:text-blue-600 hover:bg-blue-50'
+                      }`}
+                      title="Edit"
+                    >
+                      <Edit2 className="size-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm('Are you sure you want to delete this password?')) {
+                          onDelete(entry.id);
+                        }
+                      }}
+                      className={`p-2 rounded transition-colors ${
+                        isDarkMode ? 'text-gray-400 hover:text-red-400 hover:bg-gray-700' : 'text-gray-600 hover:text-red-600 hover:bg-red-50'
+                      }`}
+                      title="Delete"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Credentials */}
+                <div className="space-y-3">
+                  {entry.credentials.map((credential, credIndex) => (
+                    <div key={credential.id} className="space-y-2">
+                      {entry.credentials.length > 1 && (
+                        <div className={`text-xs mt-3 mb-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>Credential {credIndex + 1}</div>
+                      )}
+
+                      {/* Username */}
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <div className={`w-full sm:w-24 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Username:</div>
+                        <div className="flex-1 flex items-center gap-2">
+                          <code
+                            className={`flex-1 min-w-0 px-3 py-1.5 rounded text-sm font-mono break-all ${
+                              isDarkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-50 text-gray-900'
+                            }`}
+                          >
+                            {credential.username}
+                          </code>
+                          <button
+                            onClick={() => copyToClipboard(credential.username, `${credential.id}-username`)}
+                            className={`p-2 rounded transition-colors ${
+                              isDarkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-gray-700' : 'text-gray-600 hover:text-blue-600 hover:bg-blue-50'
+                            }`}
+                            title="Copy username"
+                          >
+                            {copiedField === `${credential.id}-username` ? <span className="text-xs text-green-600">✓</span> : <Copy className="size-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Password */}
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <div className={`w-full sm:w-24 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Password:</div>
+                        <div className="flex-1 flex items-center gap-2">
+                          <code
+                            className={`flex-1 min-w-0 px-3 py-1.5 rounded text-sm font-mono break-all ${
+                              isDarkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-50 text-gray-900'
+                            }`}
+                          >
+                            {visiblePasswords.has(credential.id) ? credential.password : '••••••••••••'}
+                          </code>
+                          <button
+                            onClick={() => togglePasswordVisibility(credential.id)}
+                            className={`p-2 rounded transition-colors ${
+                              isDarkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-gray-700' : 'text-gray-600 hover:text-blue-600 hover:bg-blue-50'
+                            }`}
+                            title={visiblePasswords.has(credential.id) ? 'Hide password' : 'Show password'}
+                          >
+                            {visiblePasswords.has(credential.id) ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                          </button>
+                          <button
+                            onClick={() => copyToClipboard(credential.password, `${credential.id}-password`)}
+                            className={`p-2 rounded transition-colors ${
+                              isDarkMode ? 'text-gray-400 hover:text-blue-400 hover:bg-gray-700' : 'text-gray-600 hover:text-blue-600 hover:bg-blue-50'
+                            }`}
+                            title="Copy password"
+                          >
+                            {copiedField === `${credential.id}-password` ? <span className="text-xs text-green-600">✓</span> : <Copy className="size-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Notes */}
+                  {entry.notes && (
+                    <div className={`flex flex-col sm:flex-row gap-2 pt-2 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
+                      <div className={`w-full sm:w-24 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Notes:</div>
+                      <div className={`flex-1 min-w-0 text-sm break-words ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>{entry.notes}</div>
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className={`mt-3 pt-3 border-t text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
+                    isDarkMode ? 'border-gray-700 text-gray-500' : 'border-gray-100 text-gray-400'
+                  }`}
+                >
+                  <span>Last updated: {entry.updatedAt.toLocaleDateString()}</span>
+                  {entry.type === 'Server' ? (
+                    <button
+                      onClick={() => connectSsh(entry)}
+                      disabled={connectingId === entry.id}
+                      className={`inline-flex w-full sm:w-auto justify-center items-center gap-2 px-3 py-2 rounded-md border transition-colors text-xs disabled:opacity-60 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                      }`}
+                      title="Open this host in IntelliSSH"
+                    >
+                      <Terminal className="size-3.5" />
+                      {connectingId === entry.id ? 'Connecting…' : 'Connect SSH'}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>
